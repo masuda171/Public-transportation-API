@@ -1,84 +1,103 @@
-# HERE Routing API v8 — パラメータ設定メモ
+# 駅すぱあと Web Service API — パラメータ設定メモ
 
-このドキュメントは、アプリで使用している HERE Routing API v8 のパラメータと、変更時の注意点をまとめたものです。
+このドキュメントは、アプリで使用している 駅すぱあと Web Service API のパラメータと、変更時の注意点をまとめたものです。
 
-## 現在の設定（fetchRoute）
+## 現在の設定（`/api/ekispert/route`）
 
 ```
-GET https://router.hereapi.com/v8/routes
-  transportMode  = car
-  routingMode    = fast
-  departureTime  = any
-  origin         = {lat},{lng}
-  destination    = {lat},{lng}
-  return         = summary,tolls,polyline,actions,instructions
-  lang           = ja
-  apikey         = {YOUR_KEY}
+POST /api/ekispert/route  （Next.js API Routeがプロキシ）
+  ↓
+GET https://api.ekispert.jp/v1/json/search/course/extreme
+  key          = {YOUR_KEY}
+  searchType   = plain
+  sort         = time
+  answerCount  = 1
+  gcs          = wgs84
+  viaList      = {origin_lat},{origin_lng},wgs84:{dest_lat},{dest_lng},wgs84
 ```
 
 ---
 
 ## 主要パラメータの選択肢
 
-### `routingMode`
+### `searchType`
 | 値 | 説明 |
 |---|---|
-| `fast`（現在） | 最短時間ルート |
-| `short` | 最短距離ルート |
+| `plain`（現在） | 平均待ち時間ベースで計算 |
+| `departure` | 出発時刻指定 |
+| `arrival` | 到着時刻指定 |
 
-### `departureTime`
+### `sort`
 | 値 | 説明 |
 |---|---|
-| `any`（現在） | 渋滞なし・道路の基本速度で計算 |
-| `2025-04-01T06:00:00+09:00` | 指定日時の交通状況を反映 |
-| ※省略 | APIリクエスト時の現在時刻のリアルタイム渋滞を反映 |
+| `time`（現在） | 所要時間が最短の経路を先頭に |
+| `transfer` | 乗り換え回数が最少の経路を先頭に |
+| `price` | 費用が最安の経路を先頭に |
 
-### `return` フィールド一覧（利用可能なもの）
-| 値 | 説明 |
-|---|---|
-| `summary` | 距離・時間の要約（必須） |
-| `tolls` | 料金所データ（必須） |
-| `polyline` | ルート形状（地図表示に使用） |
-| `actions` | ターンバイターン（経路詳細に使用） |
-| `instructions` | `actions` に日本語テキストを付与 |
-| `elevation` | 標高データ |
-| `incidents` | 交通インシデント情報 |
-| `routeHandle` | ルートの符号化（キャッシュ用途） |
+### `viaList`（座標指定）
+コロン `:` で複数の経由地点を区切る。座標は `{緯度},{経度},{測地系}` の形式。
+```
+viaList = 33.5902,130.4017,wgs84:33.5903,130.4208,wgs84
+```
+コロン `:` はURLエンコードしない（実装では `%3A` → `:` に戻している）。
 
 ---
 
-## 料金取得の仕組み
+## レスポンス構造（主要フィールド）
 
 ```
-routes[0]
-  .sections[]
-    .tolls[]
-      .tollSystem         // 料金所システム名（例: 首都高速）
-      .tollCollectionLocations
-        .entry.name       // 入口料金所名
-        .exit.name        // 出口料金所名
-      .fares[]
-        .paymentMethods[] // "cash", "ETC", "ETC2.0" など
-        .price.value      // 料金（円）
+ResultSet
+  .Course[]
+    .Route
+      .distance          // 距離（100m単位）
+      .timeOnBoard       // 乗車時間（分）
+      .timeWalk          // 徒歩時間（分）
+      .timeOther         // その他時間（分）
+      .Point[]
+        .Station.Name    // 駅名
+        .GeoPoint
+          .lati_d        // 緯度（度）
+          .longi_d       // 経度（度）
+      .Line[]
+        .Name            // 路線名
+        .Type
+          .text          // 交通手段種別（train / walk / bus 等）
+          .detail        // 詳細種別（shinkansen / limitedExpress / highway 等）
+    .Price[]
+      .kind              // "FareSummary"（運賃）/ "ChargeSummary"（料金）
+      .Oneway            // 片道金額（円）
 ```
-
-### 支払い方法の優先順位（現在の実装）
-1. `"cash"` — 現金料金
-2. フォールバック: `fares[0]`
-
-ETC料金に変更する場合は `"cash"` → `"ETC"` に変更してください。
 
 ---
 
-## 回避オプション（未使用・参考）
+## 費用取得の仕組み
 
 ```
-avoid[features] = tollRoads    # 有料道路を回避
-avoid[features] = ferries      # フェリーを回避
-avoid[features] = tunnels      # トンネルを回避
-avoid[features] = highways     # 高速道路を回避
-exclude[countries] = JP        # 特定の国を除外
+Course.Price[]
+  kind = "FareSummary"  → Oneway  （普通運賃）
+  kind = "ChargeSummary" → Oneway （特急料金等）
 ```
+
+合計費用 = FareSummary.Oneway + ChargeSummary.Oneway
+
+---
+
+## 交通手段ラベル対応表
+
+| `Type.text` | `Type.detail` | 表示ラベル |
+|---|---|---|
+| `walk` | — | 徒歩 |
+| `train` | — | 鉄道 |
+| `train` | `shinkansen` | 新幹線 |
+| `train` | `limitedExpress` | 有料特急 |
+| `train` | `sleeperTrain` | 寝台列車 |
+| `train` | `liner` | ライナー |
+| `bus` | — | バス |
+| `bus` | `highway` | 高速バス |
+| `bus` | `midnight` | 深夜急行バス |
+| `bus` | `connection` | 連絡バス |
+| `plane` | — | 飛行機 |
+| `ship` | — | 船 |
 
 ---
 
@@ -86,5 +105,12 @@ exclude[countries] = JP        # 特定の国を除外
 
 | 方式 | パラメータ |
 |---|---|
-| APIキー（現在） | クエリパラメータ `apikey=xxx` |
-| Bearerトークン | `Authorization: Bearer <JWT>`（OAuth 1.0a） |
+| APIキー（現在） | クエリパラメータ `key=xxx` |
+
+---
+
+## 変更時の注意点
+
+- `answerCount` を増やすと `Course[]` が複数返る。現在は `courses[0]`（最良経路）のみ使用。
+- `searchType=departure` 等に変更する場合は `date` / `time` パラメータが追加で必要。
+- `gcs=tokyo` （旧日本測地系）への変更は不要（入力CSVはWGS84前提）。
